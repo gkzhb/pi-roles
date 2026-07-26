@@ -186,12 +186,11 @@ By default, a normal new conversation resolves its role again from `--role`, `PI
 { "pi-roles": { "preserveRoleOnNewSession": true } }
 ```
 
-This applies only to ordinary new conversations. `pi-roles` reads the prior
-session's persisted active role through Pi's session-replacement metadata, so
-it works even though `/new` creates a new extension instance. `/role <name>
---reset` still uses its explicitly requested role; reload and resume restore
-their session role as before. The setting does not persist a role across a Pi
-restart—on startup, the normal initial-role resolution still applies.
+A normal replacement reads the old session file. **Before the first assistant
+response, Pi deliberately has not created that file yet**; during that narrow
+case pi-roles transfers the active role through a process-local snapshot taken
+at `session_before_switch`. The replacement instance consumes that snapshot
+once. This fallback does not persist roles across a Pi restart.
 
 ---
 

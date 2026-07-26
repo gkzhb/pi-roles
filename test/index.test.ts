@@ -12,6 +12,7 @@ import {
   composeSystemPrompt,
   pickInitialRoleName,
   pickNewSessionRoleName,
+  pickPreviousSessionRoleState,
   resolvePreviousSessionRoleState,
   roleCompletions,
 } from "../src/index.ts";
@@ -217,6 +218,33 @@ describe("resolvePreviousSessionRoleState", () => {
 
     expect(state.activeRole).toBeUndefined();
     expect(state.pendingResetRole).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// process-transfer fallback selection
+// ---------------------------------------------------------------------------
+
+describe("pickPreviousSessionRoleState", () => {
+  const diskPlanner = resolvePreviousSessionRoleState([activeRoleEntry("planner")]);
+  const memoryArchitect = resolvePreviousSessionRoleState([activeRoleEntry("architect")]);
+
+  it("uses the process snapshot when an empty pre-first-response session has no disk state", () => {
+    const diskEmpty = resolvePreviousSessionRoleState([]);
+    expect(pickPreviousSessionRoleState(diskEmpty, memoryArchitect)?.activeRole?.name).toBe("architect");
+  });
+
+  it("keeps persisted state authoritative once it exists", () => {
+    expect(pickPreviousSessionRoleState(diskPlanner, memoryArchitect)?.activeRole?.name).toBe("planner");
+  });
+
+  it("uses the process reset request when the old session has no persisted entries", () => {
+    const memoryReset = resolvePreviousSessionRoleState([
+      customEntry(RESET_ROLE_REQUEST_ENTRY_TYPE, { name: "planner", requestedAt: 1 }),
+    ]);
+    const diskEmpty = resolvePreviousSessionRoleState([]);
+
+    expect(pickPreviousSessionRoleState(diskEmpty, memoryReset)?.pendingResetRole?.name).toBe("planner");
   });
 });
 

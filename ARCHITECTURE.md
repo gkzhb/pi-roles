@@ -127,18 +127,19 @@ The Pi extension entry point (`export default function(pi: ExtensionAPI)`). Owns
 | Concern | Implementation |
 |---|---|
 | **Module-scoped `RuntimeState`** | `activeRole`, `roles[]`, `shadowed[]`, `settings`, `intent`, `titleInFlight` |
-| **`session_start` handler** | Reload/resume restores the active session's `active-role` entry. New sessions read `previousSessionFile`: an explicit reset request wins; otherwise `preserveRoleOnNewSession` can inherit the prior active role; otherwise normal initial precedence applies. Calls `applyResolved`. |
+| **`session_before_switch` handler** | Snapshots the active role and any reset request into a process-local bridge before Pi destroys the old extension instance. This only covers Pi's pre-first-assistant-response session-file deferral. |
+| **`session_start` handler** | Reload/resume restores the active session's `active-role` entry. New sessions prefer persisted prior state from `previousSessionFile`, falling back to the process bridge when the old session has no file yet; an explicit reset request wins, then `preserveRoleOnNewSession`, then normal initial precedence. Calls `applyResolved`. |
 | **`before_agent_start` handler** | Returns `{ systemPrompt: role.body + intercom addendum }`. **Full replacement** — ignores Pi's default coding-assistant framing. Triggers fire-and-forget title generation on first user prompt. |
 | **`/role` command** | Dispatches `list`, `current`, `reload`, or `<name> [--reset]`. Tab-completes role names against discovery. |
 | **`--role` flag** | Registered as a Pi flag; read in `pickInitialRoleName`. |
 | **Message renderer** | Registered for `pi-roles:notification` custom type so `Switched to role X` surfaces cleanly. |
 
-**`--reset` transfer constraint:** Pi destroys the old extension instance during
-`ctx.newSession()`. Before requesting replacement, the command appends
-`pi-roles:reset-role-request` with the requested role. The new instance reads
-that entry from `event.previousSessionFile`. If Pi cancels the replacement, the
-old instance appends `pi-roles:reset-role-cancelled`; when reading a prior
-session, the final reset lifecycle event is authoritative.
+The normal source is the previous session's persisted log. Pi intentionally
+**does not create/write a session file until an assistant response exists**.
+For `/new` before that first response, `session_before_switch` stores a
+one-shot process-local snapshot keyed by the previous session file; the new
+instance consumes it when disk has no role state. This bridge is deliberately
+not cross-process persistence.
 
 ### `src/title.ts` — Session-name intent generation
 
@@ -266,6 +267,8 @@ before_agent_start fires
   │
   └─► pi-roles reads the old session file
         │
+        ├─► no role entries yet (pre-first assistant response)
+        │     └─ consume process-local snapshot from session_before_switch
         ├─► final reset lifecycle entry is request
         │     └─ apply its explicit role (highest priority)
         ├─► otherwise preserveRoleOnNewSession=true + active-role entry

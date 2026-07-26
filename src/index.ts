@@ -53,10 +53,46 @@ import { debugLog } from "./debug.ts";
 const FLAG_NAME = "role";
 const ENV_VAR = "PI_ROLE";
 const SUBCOMMANDS = ["list", "current", "reload"] as const;
+const PROCESS_TRANSFER_KEY = Symbol.for("pi-roles.previous-session-transfer");
+
+type ProcessTransferStore = Map<string, PreviousSessionRoleState>;
+
+/**
+ * Pi intentionally defers creating a session file until its first assistant
+ * response. A `/new` before that response therefore has a previous file path
+ * but no on-disk custom entries to read. Keep a process-local bridge for this
+ * narrow gap; persisted session entries remain the durable source otherwise.
+ */
+function processTransferStore(): ProcessTransferStore {
+  const root = globalThis as typeof globalThis & { [PROCESS_TRANSFER_KEY]?: ProcessTransferStore };
+  return (root[PROCESS_TRANSFER_KEY] ??= new Map());
+}
+
+function storeProcessTransfer(sessionFile: string | undefined, state: PreviousSessionRoleState): void {
+  if (sessionFile) processTransferStore().set(sessionFile, state);
+}
+
+function takeProcessTransfer(sessionFile: string | undefined): PreviousSessionRoleState | undefined {
+  if (!sessionFile) return undefined;
+  const store = processTransferStore();
+  const state = store.get(sessionFile);
+  store.delete(sessionFile);
+  return state;
+}
+
+function discardProcessTransfer(sessionFile: string | undefined): void {
+  if (sessionFile) processTransferStore().delete(sessionFile);
+}
 
 interface RuntimeState {
   /** Live role applied to this session, or null before first apply. */
   activeRole: ResolvedRole | null;
+  /**
+   * Explicit reset requested in this still-live instance. It is copied into
+   * the process bridge by session_before_switch, then read by the replacement
+   * instance if Pi has not yet created the old session file.
+   */
+  pendingResetRequest: ResetRoleRequest | undefined;
   /** Cached discovery result; refreshed on session_start, every `/role` invocation, and `/role reload`. */
   roles: RawRole[];
   /** Shadowed roles found at lower-precedence scopes; shown in `/role list`. */
@@ -83,6 +119,7 @@ interface RuntimeState {
 export default function (pi: ExtensionAPI): void {
   const state: RuntimeState = {
     activeRole: null,
+    pendingResetRequest: undefined,
     roles: [],
     shadowed: [],
     settings: {},
@@ -120,13 +157,27 @@ export default function (pi: ExtensionAPI): void {
     return undefined;
   });
 
+  // Capture an in-process transfer snapshot before Pi destroys this extension
+  // instance. It is consumed only when the replacement session cannot read
+  // its previous role state from disk (the no-assistant-response case).
+  pi.on("session_before_switch", (event, ctx) => {
+    if (event.reason !== "new") return;
+    storeProcessTransfer(ctx.sessionManager.getSessionFile(), {
+      activeRole: state.activeRole ? activeRoleStateFromResolved(state.activeRole, state.intent) : undefined,
+      pendingResetRole: state.pendingResetRequest,
+    });
+  });
+
   // --------------------------------------------------------------- session_start
   pi.on("session_start", async (event, ctx) => {
     refreshFromDisk(ctx.cwd);
 
     const restored = findRestoredState(ctx);
-    const previous =
+    const diskPrevious =
       event.reason === "new" ? findPreviousSessionRoleState(event.previousSessionFile) : undefined;
+    const memoryPrevious =
+      event.reason === "new" ? takeProcessTransfer(event.previousSessionFile) : undefined;
+    const previous = pickPreviousSessionRoleState(diskPrevious, memoryPrevious);
     debugLog("index", `session_start reason=${event.reason}`, {
       restored: restored ? { name: restored.name, intent: restored.intent } : undefined,
       previousActiveRole: previous?.activeRole?.name,
@@ -244,12 +295,13 @@ export default function (pi: ExtensionAPI): void {
         // Pi replaces the extension instance during newSession(). Persist the
         // requested target in the old session before replacement; the new
         // instance reads it via event.previousSessionFile in session_start.
-        pi.appendEntry<ResetRoleRequest>(RESET_ROLE_REQUEST_ENTRY_TYPE, {
-          name,
-          requestedAt: Date.now(),
-        });
+        const request: ResetRoleRequest = { name, requestedAt: Date.now() };
+        state.pendingResetRequest = request;
+        pi.appendEntry<ResetRoleRequest>(RESET_ROLE_REQUEST_ENTRY_TYPE, request);
         const result = await resetSession(ctx);
         if (result.cancelled) {
+          state.pendingResetRequest = undefined;
+          discardProcessTransfer(ctx.sessionManager.getSessionFile());
           // Session replacement did not happen, so the old Pi API/context is
           // still valid. The final reset lifecycle event being "cancelled"
           // makes the earlier request ineligible for a later /new.
@@ -355,6 +407,38 @@ function findRestoredState(
     return undefined;
   }
   return findActiveRoleState(entries);
+}
+
+/**
+ * Select previous-session state for a new extension instance. A session with
+ * no assistant response has no persisted custom entries yet, so an empty disk
+ * result must yield to the process bridge. Once disk contains role state it
+ * remains authoritative.
+ */
+export function pickPreviousSessionRoleState(
+  diskState: PreviousSessionRoleState | undefined,
+  processState: PreviousSessionRoleState | undefined,
+): PreviousSessionRoleState | undefined {
+  return hasPreviousRoleState(diskState) ? diskState : processState ?? diskState;
+}
+
+function hasPreviousRoleState(
+  state: PreviousSessionRoleState | undefined,
+): state is PreviousSessionRoleState {
+  return !!state && (!!state.activeRole || !!state.pendingResetRole);
+}
+
+function activeRoleStateFromResolved(
+  role: ResolvedRole,
+  intent: string | undefined,
+): ActiveRoleState {
+  return {
+    name: role.name,
+    source: role.source,
+    path: role.path,
+    intent,
+    appliedAt: Date.now(),
+  };
 }
 
 /** State that a replacement session may inherit from its previous session. */
