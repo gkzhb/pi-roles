@@ -186,7 +186,12 @@ By default, a normal new conversation resolves its role again from `--role`, `PI
 { "pi-roles": { "preserveRoleOnNewSession": true } }
 ```
 
-This applies only to ordinary new conversations. `/role <name> --reset` still uses its explicitly requested role; reload and resume restore their session role as before. The setting does not persist a role across a Pi restart—on startup, the normal initial-role resolution still applies.
+This applies only to ordinary new conversations. `pi-roles` reads the prior
+session's persisted active role through Pi's session-replacement metadata, so
+it works even though `/new` creates a new extension instance. `/role <name>
+--reset` still uses its explicitly requested role; reload and resume restore
+their session role as before. The setting does not persist a role across a Pi
+restart—on startup, the normal initial-role resolution still applies.
 
 ---
 
@@ -295,7 +300,7 @@ If you have Pi's [auto-reload](https://github.com/badlogic/pi-mono/blob/main/pac
 |---|---|---|
 | `roleScope` | `"both"` | Discovery scope. `"user"`, `"project"`, or `"both"`. |
 | `defaultRole` | `"role-assistant"` | Role applied at session start when no `--role` or `PI_ROLE`. |
-| `preserveRoleOnNewSession` | `false` | Keep the current process's active role when creating a normal new conversation. Does not apply across restarts or to explicit `/role <name> --reset`. |
+| `preserveRoleOnNewSession` | `false` | Keep the prior session's active role when creating a normal new conversation. Does not apply across restarts or to explicit `/role <name> --reset`. |
 | `intercomMode` | `"off"` | Default intercom behavior for roles that don't set it explicitly. |
 | `titleModel` | `null` (auto) | Model used for session-intent summarization. Its API key and request headers are resolved from Pi's model registry, including `models.json` environment-variable configuration. Falls back to the session's current model. |
 | `warnOnMissingMcp` | `true` | Whether to surface a warning when a role's `mcp:*` entry can't be resolved. |

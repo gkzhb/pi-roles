@@ -126,16 +126,19 @@ The Pi extension entry point (`export default function(pi: ExtensionAPI)`). Owns
 
 | Concern | Implementation |
 |---|---|
-| **Module-scoped `RuntimeState`** | `activeRole`, `pendingRoleAfterReset`, `roles[]`, `shadowed[]`, `settings`, `intent`, `titleInFlight` |
-| **`session_start` handler** | Restore from `appendEntry` (reload/resume) or resolve from precedence chain (pendingReset > `--role` > `PI_ROLE` > `defaultRole` > built-in). Calls `applyResolved`. |
+| **Module-scoped `RuntimeState`** | `activeRole`, `roles[]`, `shadowed[]`, `settings`, `intent`, `titleInFlight` |
+| **`session_start` handler** | Reload/resume restores the active session's `active-role` entry. New sessions read `previousSessionFile`: an explicit reset request wins; otherwise `preserveRoleOnNewSession` can inherit the prior active role; otherwise normal initial precedence applies. Calls `applyResolved`. |
 | **`before_agent_start` handler** | Returns `{ systemPrompt: role.body + intercom addendum }`. **Full replacement** — ignores Pi's default coding-assistant framing. Triggers fire-and-forget title generation on first user prompt. |
 | **`/role` command** | Dispatches `list`, `current`, `reload`, or `<name> [--reset]`. Tab-completes role names against discovery. |
 | **`--role` flag** | Registered as a Pi flag; read in `pickInitialRoleName`. |
 | **Message renderer** | Registered for `pi-roles:notification` custom type so `Switched to role X` surfaces cleanly. |
 
-**`--reset` ordering constraint:** `pendingRoleAfterReset` is set *before* `ctx.newSession()`
-because `newSession` synchronously fires `session_start` (reason `"new"`) before resolving.
-The handler reads and clears the pointer; on cancellation, it's restored to `null`.
+**`--reset` transfer constraint:** Pi destroys the old extension instance during
+`ctx.newSession()`. Before requesting replacement, the command appends
+`pi-roles:reset-role-request` with the requested role. The new instance reads
+that entry from `event.previousSessionFile`. If Pi cancels the replacement, the
+old instance appends `pi-roles:reset-role-cancelled`; when reading a prior
+session, the final reset lifecycle event is authoritative.
 
 ### `src/title.ts` — Session-name intent generation
 
@@ -252,24 +255,43 @@ before_agent_start fires
         └─ state.activeRole updated, state.intent preserved
 ```
 
+### New session role transfer
+
+```text
+/new
+  │
+  ├─► Pi tears down the old extension instance
+  ├─► Pi starts a new extension instance with
+  │     session_start(reason="new", previousSessionFile)
+  │
+  └─► pi-roles reads the old session file
+        │
+        ├─► final reset lifecycle entry is request
+        │     └─ apply its explicit role (highest priority)
+        ├─► otherwise preserveRoleOnNewSession=true + active-role entry
+        │     └─ apply old session's active role
+        └─► otherwise resolve --role > PI_ROLE > defaultRole > role-assistant
+
+All `reason="new"` paths begin with an empty intent; titles are conversation-specific.
+```
+
 ### /role <name> --reset
 
-```
-/role planner --reset
+```text
+/role planner --reset (old session)
   │
-  ├─► state.pendingRoleAfterReset = "planner"
+  ├─► pi.appendEntry("pi-roles:reset-role-request", { name: "planner", requestedAt })
+  ├─► resetSession(ctx) → ctx.newSession()
+  │     └─ Pi replaces extension/runtime, then starts the new session
   │
-  ├─► resetSession(ctx)
-  │     ├─ await ctx.waitForIdle()
-  │     └─ ctx.newSession()
-  │           │
-  │           └─► synchronously fires session_start (reason="new")
-  │                 │
-  │                 ├─ reads pendingRoleAfterReset → "planner"
-  │                 ├─ clears state.intent (fresh session)
-  │                 └─ applyResolved("planner", ...)
+  ├─► new instance reads prior reset request through previousSessionFile
+  │     └─ applyResolved("planner", { preservedIntent: undefined })
   │
-  └─► if cancelled: state.pendingRoleAfterReset = null
+  └─► if ctx.newSession() is cancelled (old session remains live)
+        └─ pi.appendEntry("pi-roles:reset-role-cancelled", { cancelledAt })
+
+The two reset events are intentionally ordered rather than correlated by an ID:
+the last reset lifecycle entry controls whether a request is pending.
 ```
 
 ### Reload/resume (extension memory wiped)
@@ -396,7 +418,7 @@ schema, because JSON Schema can't distinguish `undefined` from "not validated"):
 | **`mcp:*` entries silently dropped** when `pi-mcp-adapter` isn't installed | `warnOnMissingMcp` defaults to `true`; one warning per dropped entry |
 | **Title generation latency** — hitting a model for intent summarization adds cost | Fire-and-forget; the agent loop starts immediately. Title model is typically a cheap model (`gpt-4o-mini`). |
 | **Stale intent after `--reset` race** — title generation in flight when reset happens | Re-check `state.intent` and `state.activeRole` after await; drop stale result. Worst case is one cosmetic glitch for one prompt. |
-| **`--reset` + `newSession` ordering** — `pendingRoleAfterReset` must be set before `newSession` because `session_start` fires synchronously | Enforced in the command handler; cancellation path restores `null`. |
+| **`--reset` transfer across replacement** — old extension state cannot survive `newSession` | Persist reset request in the old session; read it from `previousSessionFile` in the new instance; append a cancellation event if replacement is cancelled. |
 | **Extension memory wiped on `/reload`** — all module-scoped state is lost | `pi.appendEntry` persistence + `session_start` restore from session log. Intent and active role survive `/reload`. |
 | **No runtime cache invalidation** for role files — if a parent role is edited while a child is active, the child's in-memory resolved state is stale | `/role reload` or `/role <same-name>` re-reads the full chain from disk. Users iterating on roles are expected to use these. |
 | **Pi API surface instability** — the extension depends on Pi internal APIs that may change between versions | Version pin in `package.json` `engines`; the BUILD-STATUS.md documents the verified API surface against pi-mono as of April 2026. |

@@ -8,10 +8,24 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { composeSystemPrompt, pickInitialRoleName, pickNewSessionRoleName, roleCompletions } from "../src/index.ts";
+import {
+  composeSystemPrompt,
+  pickInitialRoleName,
+  pickNewSessionRoleName,
+  resolvePreviousSessionRoleState,
+  roleCompletions,
+} from "../src/index.ts";
 import { parseRoleSource, resolveRole } from "../src/roles.ts";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import type { PiRolesSettings, RawRole, ResolvedRole } from "../src/schemas.ts";
+import type { ExtensionAPI, SessionEntry } from "@mariozechner/pi-coding-agent";
+import {
+  ACTIVE_ROLE_ENTRY_TYPE,
+  RESET_ROLE_CANCELLED_ENTRY_TYPE,
+  RESET_ROLE_REQUEST_ENTRY_TYPE,
+  type ActiveRoleState,
+  type PiRolesSettings,
+  type RawRole,
+  type ResolvedRole,
+} from "../src/schemas.ts";
 import { INTERCOM_TOOL_NAME } from "../src/intercom.ts";
 
 function makePi(flags: Record<string, string | boolean | undefined> = {}): ExtensionAPI {
@@ -38,6 +52,28 @@ function withEnv(value: string | undefined, fn: () => void): void {
     if (ENV_BACKUP === undefined) delete process.env.PI_ROLE;
     else process.env.PI_ROLE = ENV_BACKUP;
   }
+}
+
+function customEntry(customType: string, data?: unknown): SessionEntry {
+  return {
+    type: "custom",
+    id: `entry-${Math.random()}`,
+    parentId: null,
+    timestamp: new Date().toISOString(),
+    customType,
+    data,
+  };
+}
+
+function activeRoleEntry(name: string, intent?: string): SessionEntry {
+  const state: ActiveRoleState = {
+    name,
+    source: "project",
+    path: `/v/${name}.md`,
+    appliedAt: Date.now(),
+    ...(intent === undefined ? {} : { intent }),
+  };
+  return customEntry(ACTIVE_ROLE_ENTRY_TYPE, state);
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +162,61 @@ describe("pickNewSessionRoleName", () => {
         pickNewSessionRoleName(null, makePi(), { preserveRoleOnNewSession: true }, roles),
       ).toBe("role-assistant");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// previous-session role state
+// ---------------------------------------------------------------------------
+
+describe("resolvePreviousSessionRoleState", () => {
+  it("returns the last valid active role from the previous session", () => {
+    const state = resolvePreviousSessionRoleState([
+      activeRoleEntry("architect", "Design auth"),
+      activeRoleEntry("planner", "Plan auth"),
+    ]);
+
+    expect(state.activeRole).toMatchObject({ name: "planner", intent: "Plan auth" });
+    expect(state.pendingResetRole).toBeUndefined();
+  });
+
+  it("makes an explicit reset request override ordinary preservation", () => {
+    const state = resolvePreviousSessionRoleState([
+      activeRoleEntry("architect"),
+      customEntry(RESET_ROLE_REQUEST_ENTRY_TYPE, { name: "planner", requestedAt: 1 }),
+    ]);
+
+    expect(state.activeRole?.name).toBe("architect");
+    expect(state.pendingResetRole).toEqual({ name: "planner", requestedAt: 1 });
+  });
+
+  it("cancels the preceding reset request when cancellation is the final lifecycle event", () => {
+    const state = resolvePreviousSessionRoleState([
+      customEntry(RESET_ROLE_REQUEST_ENTRY_TYPE, { name: "planner", requestedAt: 1 }),
+      customEntry(RESET_ROLE_CANCELLED_ENTRY_TYPE, { cancelledAt: 2 }),
+    ]);
+
+    expect(state.pendingResetRole).toBeUndefined();
+  });
+
+  it("uses a later reset request after an earlier cancellation", () => {
+    const state = resolvePreviousSessionRoleState([
+      customEntry(RESET_ROLE_REQUEST_ENTRY_TYPE, { name: "planner", requestedAt: 1 }),
+      customEntry(RESET_ROLE_CANCELLED_ENTRY_TYPE, { cancelledAt: 2 }),
+      customEntry(RESET_ROLE_REQUEST_ENTRY_TYPE, { name: "architect", requestedAt: 3 }),
+    ]);
+
+    expect(state.pendingResetRole).toEqual({ name: "architect", requestedAt: 3 });
+  });
+
+  it("ignores malformed role and reset entries", () => {
+    const state = resolvePreviousSessionRoleState([
+      customEntry(ACTIVE_ROLE_ENTRY_TYPE, { name: 42 }),
+      customEntry(RESET_ROLE_REQUEST_ENTRY_TYPE, { name: "", requestedAt: "now" }),
+    ]);
+
+    expect(state.activeRole).toBeUndefined();
+    expect(state.pendingResetRole).toBeUndefined();
   });
 });
 

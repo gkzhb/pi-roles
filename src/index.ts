@@ -5,12 +5,13 @@
  * (settings.ts) into the three Pi integration points the role lifecycle
  * actually needs:
  *
- *   - `session_start` — restore from persisted state on reload/resume,
- *     otherwise resolve a role name from the precedence chain (pendingReset
- *     > --role > PI_ROLE > settings.defaultRole > built-in role-assistant),
- *     then apply it. When `preserveRoleOnNewSession` is enabled, a normal new
- *     session instead retains the role currently active in this extension
- *     instance.
+ *   - `session_start` — restore the current session's persisted role on
+ *     reload/resume. For a new session, resolve an explicit persisted reset
+ *     request first, then (when configured) preserve the previous session's
+ *     active role, otherwise use --role > PI_ROLE > defaultRole > built-in.
+ *     New-session transfer reads `previousSessionFile`; Pi recreates the
+ *     extension instance during session replacement, so in-memory state is
+ *     intentionally never used as a cross-session handoff.
  *   - `before_agent_start` — re-inject the active role's body as the system
  *     prompt every turn (Pi rebuilds the prompt per turn; this is the
  *     stable hook).
@@ -23,7 +24,12 @@
  * in the session log.
  */
 
-import type { ExtensionAPI, ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import {
+  SessionManager,
+  type ExtensionAPI,
+  type ExtensionCommandContext,
+  type SessionEntry,
+} from "@mariozechner/pi-coding-agent";
 import type { AutocompleteItem } from "@mariozechner/pi-tui";
 import { applyRole, effectiveIntercomMode, resetSession, type RoleNotificationDetails } from "./apply.ts";
 import { intercomPromptAddendum, isIntercomAvailable } from "./intercom.ts";
@@ -31,11 +37,14 @@ import { discoverRoles, findBuiltInAssistant, resolveRole, RoleResolutionError }
 import {
   ACTIVE_ROLE_ENTRY_TYPE,
   BUILTIN_ROLE_ASSISTANT_NAME,
+  RESET_ROLE_CANCELLED_ENTRY_TYPE,
+  RESET_ROLE_REQUEST_ENTRY_TYPE,
   ROLE_NOTIFICATION_MESSAGE_TYPE,
   type ActiveRoleState,
   type PiRolesSettings,
   type RawRole,
   type ResolvedRole,
+  type ResetRoleRequest,
 } from "./schemas.ts";
 import { loadSettings } from "./settings.ts";
 import { generateAndApplyTitle } from "./title.ts";
@@ -48,8 +57,6 @@ const SUBCOMMANDS = ["list", "current", "reload"] as const;
 interface RuntimeState {
   /** Live role applied to this session, or null before first apply. */
   activeRole: ResolvedRole | null;
-  /** Set by `/role <name> --reset` so the next session_start (reason="new") applies it. */
-  pendingRoleAfterReset: string | null;
   /** Cached discovery result; refreshed on session_start, every `/role` invocation, and `/role reload`. */
   roles: RawRole[];
   /** Shadowed roles found at lower-precedence scopes; shown in `/role list`. */
@@ -76,7 +83,6 @@ interface RuntimeState {
 export default function (pi: ExtensionAPI): void {
   const state: RuntimeState = {
     activeRole: null,
-    pendingRoleAfterReset: null,
     roles: [],
     shadowed: [],
     settings: {},
@@ -119,32 +125,39 @@ export default function (pi: ExtensionAPI): void {
     refreshFromDisk(ctx.cwd);
 
     const restored = findRestoredState(ctx);
-    debugLog("index", `session_start reason=${event.reason}`, restored ? { name: restored.name, intent: restored.intent } : undefined);
+    const previous =
+      event.reason === "new" ? findPreviousSessionRoleState(event.previousSessionFile) : undefined;
+    debugLog("index", `session_start reason=${event.reason}`, {
+      restored: restored ? { name: restored.name, intent: restored.intent } : undefined,
+      previousActiveRole: previous?.activeRole?.name,
+      previousResetRole: previous?.pendingResetRole?.name,
+    });
 
-    // Restore precedence:
-    //   - On reload/resume, prefer the persisted active-role entry.
-    //   - On startup/new/fork, resolve fresh from the chain (the persisted
-    //     entry from a previous session is irrelevant here).
-    let targetName: string | undefined;
+    // `reload` and `resume` restore state belonging to the current session.
+    // A `new` session has a fresh extension instance, so it can only inherit
+    // from entries read through `previousSessionFile`.
+    let targetName: string;
     let preservedIntent: string | undefined;
     let silent = false;
 
-    if (state.pendingRoleAfterReset) {
-      targetName = state.pendingRoleAfterReset;
-      state.pendingRoleAfterReset = null;
-      // intent is intentionally cleared on --reset (session is a fresh start).
-    } else if ((event.reason === "reload" || event.reason === "resume") && restored) {
+    if ((event.reason === "reload" || event.reason === "resume") && restored) {
       targetName = restored.name;
       preservedIntent = restored.intent;
       silent = true;
+    } else if (event.reason === "new" && previous?.pendingResetRole) {
+      // An explicit `/role <name> --reset` request always wins over ordinary
+      // preservation and normal initial-role resolution. A reset is fresh,
+      // therefore it deliberately does not carry the old intent/title.
+      targetName = previous.pendingResetRole.name;
+    } else if (event.reason === "new") {
+      targetName = pickNewSessionRoleName(
+        previous?.activeRole ?? null,
+        pi,
+        state.settings,
+        state.roles,
+      );
     } else {
-      // A normal new conversation can retain the role selected in the prior
-      // conversation. This deliberately applies only within this running
-      // extension instance: it does not make roles persist across restarts.
-      targetName =
-        event.reason === "new"
-          ? pickNewSessionRoleName(state.activeRole, pi, state.settings, state.roles)
-          : pickInitialRoleName(pi, state.settings, state.roles);
+      targetName = pickInitialRoleName(pi, state.settings, state.roles);
       // First-application is silent — the user knows what they launched
       // with; a banner here would be noise.
       silent = event.reason === "startup";
@@ -228,14 +241,19 @@ export default function (pi: ExtensionAPI): void {
       const name = sub;
 
       if (wantsReset) {
-        // Set the pending pointer FIRST: ctx.newSession() invalidates
-        // session-bound captured state and synchronously fires session_start
-        // before returning, so we can't apply the role after newSession()
-        // resolves and expect mid-session ordering to hold.
-        state.pendingRoleAfterReset = name;
+        // Pi replaces the extension instance during newSession(). Persist the
+        // requested target in the old session before replacement; the new
+        // instance reads it via event.previousSessionFile in session_start.
+        pi.appendEntry<ResetRoleRequest>(RESET_ROLE_REQUEST_ENTRY_TYPE, {
+          name,
+          requestedAt: Date.now(),
+        });
         const result = await resetSession(ctx);
         if (result.cancelled) {
-          state.pendingRoleAfterReset = null;
+          // Session replacement did not happen, so the old Pi API/context is
+          // still valid. The final reset lifecycle event being "cancelled"
+          // makes the earlier request ineligible for a later /new.
+          pi.appendEntry(RESET_ROLE_CANCELLED_ENTRY_TYPE, { cancelledAt: Date.now() });
           ctx.ui.notify(`Role switch to "${name}" cancelled.`, "info");
         }
         return;
@@ -278,10 +296,10 @@ export function composeSystemPrompt(
 }
 
 /**
- * Pick the role for an ordinary new conversation. When configured, retain the
- * role active in this extension instance; otherwise use normal initial-role
- * resolution. An explicit --reset role is handled by session_start before
- * this helper is reached.
+ * Pick the role for an ordinary new conversation. `activeRole` must come
+ * from the previous session's persisted state, not the current extension
+ * instance: Pi recreates extensions for `/new`. An explicit --reset role is
+ * resolved before this helper is reached.
  */
 export function pickNewSessionRoleName(
   activeRole: Pick<ResolvedRole, "name"> | null,
@@ -294,8 +312,8 @@ export function pickNewSessionRoleName(
 }
 
 /**
- * Pick the role to launch with on a fresh session_start (no pendingReset, no
- * persisted state to restore). Precedence per BUILD-STATUS.md:
+ * Pick the role to launch with on a fresh session_start (no persisted
+ * previous-session override). Precedence per BUILD-STATUS.md:
  *
  *   --role flag > PI_ROLE env > settings.defaultRole > built-in role-assistant
  *
@@ -330,19 +348,105 @@ export function pickInitialRoleName(
 function findRestoredState(
   ctx: Parameters<Parameters<ExtensionAPI["on"]>[1]>[1],
 ): ActiveRoleState | undefined {
-  let entries;
+  let entries: SessionEntry[];
   try {
     entries = ctx.sessionManager.getEntries();
   } catch {
     return undefined;
   }
+  return findActiveRoleState(entries);
+}
+
+/** State that a replacement session may inherit from its previous session. */
+export interface PreviousSessionRoleState {
+  activeRole: ActiveRoleState | undefined;
+  /** Present only when the final reset lifecycle event is a valid request. */
+  pendingResetRole: ResetRoleRequest | undefined;
+}
+
+/**
+ * Read transferable state from an earlier session file. Session files may be
+ * missing, corrupted, or unavailable in ephemeral modes; those cases simply
+ * disable inheritance and fall back to ordinary initial resolution.
+ */
+export function findPreviousSessionRoleState(
+  previousSessionFile: string | undefined,
+): PreviousSessionRoleState | undefined {
+  if (!previousSessionFile) return undefined;
+  try {
+    return resolvePreviousSessionRoleState(SessionManager.open(previousSessionFile).getEntries());
+  } catch (err) {
+    debugLog("index", `could not read previous session ${previousSessionFile}`, String(err));
+    return undefined;
+  }
+}
+
+/**
+ * Interpret entries from a previous session for a fresh `reason="new"`
+ * session. Exported as a pure test seam: the runtime reader above only opens
+ * the file, while this function contains the lifecycle semantics.
+ *
+ * Reset events are intentionally an ordered two-event protocol without a
+ * requestId. The final reset lifecycle event is authoritative: cancellation
+ * suppresses every earlier request; a valid final request overrides ordinary
+ * role preservation.
+ */
+export function resolvePreviousSessionRoleState(
+  entries: readonly SessionEntry[],
+): PreviousSessionRoleState {
+  let pendingResetRole: ResetRoleRequest | undefined;
   for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i];
-    if (e && e.type === "custom" && e.customType === ACTIVE_ROLE_ENTRY_TYPE) {
-      return (e.data ?? undefined) as ActiveRoleState | undefined;
+    const entry = entries[i];
+    if (!entry || entry.type !== "custom") continue;
+    if (entry.customType === RESET_ROLE_CANCELLED_ENTRY_TYPE) break;
+    if (entry.customType === RESET_ROLE_REQUEST_ENTRY_TYPE) {
+      const request = asResetRoleRequest(entry.data);
+      if (request) pendingResetRole = request;
+      break;
+    }
+  }
+
+  return { activeRole: findActiveRoleState(entries), pendingResetRole };
+}
+
+function findActiveRoleState(entries: readonly SessionEntry[]): ActiveRoleState | undefined {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (entry?.type === "custom" && entry.customType === ACTIVE_ROLE_ENTRY_TYPE) {
+      const state = asActiveRoleState(entry.data);
+      if (state) return state;
     }
   }
   return undefined;
+}
+
+function asActiveRoleState(data: unknown): ActiveRoleState | undefined {
+  if (!data || typeof data !== "object") return undefined;
+  const candidate = data as Partial<ActiveRoleState>;
+  if (
+    typeof candidate.name !== "string" ||
+    candidate.name.length === 0 ||
+    typeof candidate.source !== "string" ||
+    typeof candidate.path !== "string" ||
+    typeof candidate.appliedAt !== "number" ||
+    (candidate.intent !== undefined && typeof candidate.intent !== "string")
+  ) {
+    return undefined;
+  }
+  return candidate as ActiveRoleState;
+}
+
+function asResetRoleRequest(data: unknown): ResetRoleRequest | undefined {
+  if (!data || typeof data !== "object") return undefined;
+  const candidate = data as Partial<ResetRoleRequest>;
+  if (
+    typeof candidate.name !== "string" ||
+    candidate.name.trim().length === 0 ||
+    typeof candidate.requestedAt !== "number"
+  ) {
+    return undefined;
+  }
+  return { name: candidate.name, requestedAt: candidate.requestedAt };
 }
 
 // ---------------------------------------------------------------------------

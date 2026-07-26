@@ -324,6 +324,31 @@ export type ActiveRoleState = Static<typeof ActiveRoleStateSchema>;
  */
 export const ACTIVE_ROLE_ENTRY_TYPE = "pi-roles:active-role" as const;
 
+export interface ResetRoleRequest {
+  /** Name explicitly requested by `/role <name> --reset`. */
+  name: string;
+  /** Unix ms timestamp, retained for diagnostics. */
+  requestedAt: number;
+}
+
+export interface ResetRoleCancelled {
+  /** Unix ms timestamp, retained for diagnostics. */
+  cancelledAt: number;
+}
+
+/**
+ * Append-only request written in the old session before `/role <name> --reset`
+ * starts a replacement session. The new extension instance reads it through
+ * `session_start.previousSessionFile`.
+ */
+export const RESET_ROLE_REQUEST_ENTRY_TYPE = "pi-roles:reset-role-request" as const;
+
+/**
+ * Append-only cancellation written only when the attempted replacement is
+ * cancelled. The latest reset lifecycle entry then suppresses the request.
+ */
+export const RESET_ROLE_CANCELLED_ENTRY_TYPE = "pi-roles:reset-role-cancelled" as const;
+
 /**
  * Custom message type used by `pi.sendMessage` for user-visible role
  * notifications ("Switched to role X"). Centralized so we can register a
