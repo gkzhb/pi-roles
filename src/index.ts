@@ -7,8 +7,10 @@
  *
  *   - `session_start` — restore from persisted state on reload/resume,
  *     otherwise resolve a role name from the precedence chain (pendingReset
- *     > --role > PI_ROLE > settings.defaultRole > built-in role-assistant)
- *     and apply it.
+ *     > --role > PI_ROLE > settings.defaultRole > built-in role-assistant),
+ *     then apply it. When `preserveRoleOnNewSession` is enabled, a normal new
+ *     session instead retains the role currently active in this extension
+ *     instance.
  *   - `before_agent_start` — re-inject the active role's body as the system
  *     prompt every turn (Pi rebuilds the prompt per turn; this is the
  *     stable hook).
@@ -136,7 +138,13 @@ export default function (pi: ExtensionAPI): void {
       preservedIntent = restored.intent;
       silent = true;
     } else {
-      targetName = pickInitialRoleName(pi, state.settings, state.roles);
+      // A normal new conversation can retain the role selected in the prior
+      // conversation. This deliberately applies only within this running
+      // extension instance: it does not make roles persist across restarts.
+      targetName =
+        event.reason === "new"
+          ? pickNewSessionRoleName(state.activeRole, pi, state.settings, state.roles)
+          : pickInitialRoleName(pi, state.settings, state.roles);
       // First-application is silent — the user knows what they launched
       // with; a banner here would be noise.
       silent = event.reason === "startup";
@@ -267,6 +275,22 @@ export function composeSystemPrompt(
   const parts = [body, addendum].filter((p) => p.length > 0);
   if (parts.length === 0) return undefined;
   return { systemPrompt: parts.join("\n\n") };
+}
+
+/**
+ * Pick the role for an ordinary new conversation. When configured, retain the
+ * role active in this extension instance; otherwise use normal initial-role
+ * resolution. An explicit --reset role is handled by session_start before
+ * this helper is reached.
+ */
+export function pickNewSessionRoleName(
+  activeRole: Pick<ResolvedRole, "name"> | null,
+  pi: ExtensionAPI,
+  settings: PiRolesSettings,
+  roles: RawRole[],
+): string {
+  if (settings.preserveRoleOnNewSession && activeRole) return activeRole.name;
+  return pickInitialRoleName(pi, settings, roles);
 }
 
 /**

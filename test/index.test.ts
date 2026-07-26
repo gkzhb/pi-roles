@@ -8,7 +8,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { composeSystemPrompt, pickInitialRoleName, roleCompletions } from "../src/index.ts";
+import { composeSystemPrompt, pickInitialRoleName, pickNewSessionRoleName, roleCompletions } from "../src/index.ts";
 import { parseRoleSource, resolveRole } from "../src/roles.ts";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { PiRolesSettings, RawRole, ResolvedRole } from "../src/schemas.ts";
@@ -88,6 +88,43 @@ describe("pickInitialRoleName", () => {
   it("ignores empty flag string", () => {
     withEnv("planner", () => {
       expect(pickInitialRoleName(makePi({ role: "" }), {}, roles)).toBe("planner");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pickNewSessionRoleName
+// ---------------------------------------------------------------------------
+
+describe("pickNewSessionRoleName", () => {
+  const roles = [makeRole("architect"), makeRole("planner")];
+
+  it("uses the normal initial-role resolution by default", () => {
+    withEnv(undefined, () => {
+      expect(
+        pickNewSessionRoleName({ name: "planner" }, makePi(), { defaultRole: "architect" }, roles),
+      ).toBe("architect");
+    });
+  });
+
+  it("preserves the active role when configured", () => {
+    withEnv(undefined, () => {
+      expect(
+        pickNewSessionRoleName(
+          { name: "planner" },
+          makePi(),
+          { defaultRole: "architect", preserveRoleOnNewSession: true },
+          roles,
+        ),
+      ).toBe("planner");
+    });
+  });
+
+  it("uses initial-role resolution when preservation is enabled but no role is active", () => {
+    withEnv(undefined, () => {
+      expect(
+        pickNewSessionRoleName(null, makePi(), { preserveRoleOnNewSession: true }, roles),
+      ).toBe("role-assistant");
     });
   });
 });

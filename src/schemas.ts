@@ -253,6 +253,13 @@ export const PiRolesSettingsSchema = Type.Object(
      */
     defaultRole: Type.Optional(Type.String({ minLength: 1 })),
 
+    /**
+     * Keep the currently active role when creating a normal new conversation.
+     * Default: false, so new conversations resolve defaultRole as usual.
+     * Does not apply to --reset, reload, resume, or process restarts.
+     */
+    preserveRoleOnNewSession: Type.Optional(Type.Boolean()),
+
     /** Default intercom mode for roles that don't set `intercom:`. Default: "off". */
     intercomMode: Type.Optional(IntercomModeSchema),
 

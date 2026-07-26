@@ -149,6 +149,7 @@ The default `roleScope` is `both` (project + user + built-in). Override via sett
   "pi-roles": {
     "roleScope": "both",        // "user" | "project" | "both"
     "defaultRole": "architect", // optional; falls back to role-assistant
+    "preserveRoleOnNewSession": false, // optional; keep the active role for /new
     "intercomMode": "off",      // "off" | "receive" | "send" | "both"
     "titleModel": "openai/gpt-4o-mini"
   }
@@ -176,6 +177,16 @@ You can also set any other role as your default:
 ```
 
 If `defaultRole` points to a missing role, the built-in `role-assistant` is used and a warning is shown.
+
+### Retain the role in new conversations
+
+By default, a normal new conversation resolves its role again from `--role`, `PI_ROLE`, `defaultRole`, and finally `role-assistant`. To keep the role selected in the current Pi process when creating a new conversation, enable:
+
+```json
+{ "pi-roles": { "preserveRoleOnNewSession": true } }
+```
+
+This applies only to ordinary new conversations. `/role <name> --reset` still uses its explicitly requested role; reload and resume restore their session role as before. The setting does not persist a role across a Pi restart—on startup, the normal initial-role resolution still applies.
 
 ---
 
@@ -272,6 +283,7 @@ If you have Pi's [auto-reload](https://github.com/badlogic/pi-mono/blob/main/pac
   "pi-roles": {
     "roleScope": "both",
     "defaultRole": "role-assistant",
+    "preserveRoleOnNewSession": false,
     "intercomMode": "off",
     "titleModel": "openai/gpt-4o-mini",
     "warnOnMissingMcp": true
@@ -283,6 +295,7 @@ If you have Pi's [auto-reload](https://github.com/badlogic/pi-mono/blob/main/pac
 |---|---|---|
 | `roleScope` | `"both"` | Discovery scope. `"user"`, `"project"`, or `"both"`. |
 | `defaultRole` | `"role-assistant"` | Role applied at session start when no `--role` or `PI_ROLE`. |
+| `preserveRoleOnNewSession` | `false` | Keep the current process's active role when creating a normal new conversation. Does not apply across restarts or to explicit `/role <name> --reset`. |
 | `intercomMode` | `"off"` | Default intercom behavior for roles that don't set it explicitly. |
 | `titleModel` | `null` (auto) | Model used for session-intent summarization. Falls back to a small built-in or session's current model. |
 | `warnOnMissingMcp` | `true` | Whether to surface a warning when a role's `mcp:*` entry can't be resolved. |
