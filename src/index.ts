@@ -50,39 +50,16 @@ import { loadSettings } from "./settings.ts";
 import { generateAndApplyTitle } from "./title.ts";
 import { debugLog } from "./debug.ts";
 
+import {
+  discardProcessTransfer,
+  storeProcessTransfer,
+  takeProcessTransfer,
+  type PreviousSessionRoleState,
+} from "./utils/process-transfer.ts";
+
 const FLAG_NAME = "role";
 const ENV_VAR = "PI_ROLE";
 const SUBCOMMANDS = ["list", "current", "reload"] as const;
-const PROCESS_TRANSFER_KEY = Symbol.for("pi-roles.previous-session-transfer");
-
-type ProcessTransferStore = Map<string, PreviousSessionRoleState>;
-
-/**
- * Pi intentionally defers creating a session file until its first assistant
- * response. A `/new` before that response therefore has a previous file path
- * but no on-disk custom entries to read. Keep a process-local bridge for this
- * narrow gap; persisted session entries remain the durable source otherwise.
- */
-function processTransferStore(): ProcessTransferStore {
-  const root = globalThis as typeof globalThis & { [PROCESS_TRANSFER_KEY]?: ProcessTransferStore };
-  return (root[PROCESS_TRANSFER_KEY] ??= new Map());
-}
-
-function storeProcessTransfer(sessionFile: string | undefined, state: PreviousSessionRoleState): void {
-  if (sessionFile) processTransferStore().set(sessionFile, state);
-}
-
-function takeProcessTransfer(sessionFile: string | undefined): PreviousSessionRoleState | undefined {
-  if (!sessionFile) return undefined;
-  const store = processTransferStore();
-  const state = store.get(sessionFile);
-  store.delete(sessionFile);
-  return state;
-}
-
-function discardProcessTransfer(sessionFile: string | undefined): void {
-  if (sessionFile) processTransferStore().delete(sessionFile);
-}
 
 interface RuntimeState {
   /** Live role applied to this session, or null before first apply. */
@@ -410,10 +387,8 @@ function findRestoredState(
 }
 
 /**
- * Select previous-session state for a new extension instance. A session with
- * no assistant response has no persisted custom entries yet, so an empty disk
- * result must yield to the process bridge. Once disk contains role state it
- * remains authoritative.
+ * Prefer durable state from the previous session log. The process-local
+ * transfer is only a fallback for Pi's pre-first-response persistence gap.
  */
 export function pickPreviousSessionRoleState(
   diskState: PreviousSessionRoleState | undefined,
@@ -428,6 +403,10 @@ function hasPreviousRoleState(
   return !!state && (!!state.activeRole || !!state.pendingResetRole);
 }
 
+/**
+ * Build the active-role snapshot used exclusively by the process-local
+ * pre-persistence session-replacement bridge.
+ */
 function activeRoleStateFromResolved(
   role: ResolvedRole,
   intent: string | undefined,
@@ -439,13 +418,6 @@ function activeRoleStateFromResolved(
     intent,
     appliedAt: Date.now(),
   };
-}
-
-/** State that a replacement session may inherit from its previous session. */
-export interface PreviousSessionRoleState {
-  activeRole: ActiveRoleState | undefined;
-  /** Present only when the final reset lifecycle event is a valid request. */
-  pendingResetRole: ResetRoleRequest | undefined;
 }
 
 /**
