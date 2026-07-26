@@ -266,6 +266,7 @@ describe("generateAndApplyTitle", () => {
       modelRegistry: {
         find: vi.fn(() => undefined),
         getAll: vi.fn(() => []),
+        getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "test-key", headers: { "X-Test": "yes" } })),
       },
       model: resolved,
     } as unknown as ExtensionContext;
@@ -329,6 +330,8 @@ describe("generateAndApplyTitle", () => {
     expect(ctxArg.systemPrompt).toBe(TITLE_SYSTEM_PROMPT);
     expect(ctxArg.messages).toHaveLength(1);
     expect(ctxArg.messages[0]).toMatchObject({ role: "user", content: "do the thing" });
+    const [, , options] = completeFn.mock.calls[0] as any;
+    expect(options).toEqual({ apiKey: "test-key", headers: { "X-Test": "yes" } });
   });
 
   it("guard: skips when intent is already set", async () => {
@@ -524,6 +527,7 @@ describe("generateAndApplyTitle", () => {
           p === "anthropic" && id === "claude-haiku" ? titleModel : undefined,
         ),
         getAll: vi.fn(() => [titleModel]),
+        getApiKeyAndHeaders: vi.fn(async () => ({ ok: true, apiKey: "configured-key" })),
       },
     } as unknown as ExtensionContext;
     const completeFn = vi.fn(
@@ -539,5 +543,45 @@ describe("generateAndApplyTitle", () => {
     });
     expect(completeFn).toHaveBeenCalledTimes(1);
     expect(completeFn.mock.calls[0]![0]).toBe(titleModel);
+  });
+
+  it("uses API key and headers resolved by Pi's model registry", async () => {
+    const ctx = makeCtx();
+    const auth = ctx.modelRegistry.getApiKeyAndHeaders as ReturnType<typeof vi.fn>;
+    auth.mockResolvedValue({ ok: true, apiKey: "env-key", headers: { "X-Proxy-Key": "proxy" } });
+    const completeFn = vi.fn(async () => makeAssistantMessage("title"));
+
+    await generateAndApplyTitle({
+      prompt: "do the thing",
+      state: makeState(),
+      pi: makePi().pi,
+      ctx,
+      configuredTitleModel: undefined,
+      completeFn,
+    });
+
+    expect(auth).toHaveBeenCalledWith(expect.objectContaining({ provider: "p", id: "m" }));
+    expect((completeFn.mock.calls[0] as any)[2]).toEqual({
+      apiKey: "env-key",
+      headers: { "X-Proxy-Key": "proxy" },
+    });
+  });
+
+  it("does not call the title model when Pi cannot resolve authentication", async () => {
+    const ctx = makeCtx();
+    const auth = ctx.modelRegistry.getApiKeyAndHeaders as ReturnType<typeof vi.fn>;
+    auth.mockResolvedValue({ ok: false, error: "No API key for provider: newapi" });
+    const completeFn = vi.fn(async () => makeAssistantMessage("title"));
+
+    await generateAndApplyTitle({
+      prompt: "do the thing",
+      state: makeState(),
+      pi: makePi().pi,
+      ctx,
+      configuredTitleModel: undefined,
+      completeFn,
+    });
+
+    expect(completeFn).not.toHaveBeenCalled();
   });
 });

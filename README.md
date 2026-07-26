@@ -226,7 +226,7 @@ The session name is set via Pi's native `pi.setSessionName()` API, so:
 
 The role indicator also appears in Pi's footer (via `ctx.ui.setStatus`), composing cleanly with [`pi-powerline-footer`](https://github.com/nicobailon/pi-powerline-footer) if you have it installed. No extra dependency required.
 
-**Title generation model** (planned). The `titleModel` setting is reserved for the future intent-summarization step; it has no effect today. The current release sets the session name to the bare role name and updates the prefix on swap.
+**Title generation model.** `titleModel` selects the model used to summarize the first user message into the session intent. The extension resolves its credentials through Pi's model registry, so provider API keys, headers, and environment-variable references configured in Pi's `models.json` are forwarded to the title request. The setting falls back to the session's current model when omitted or unavailable.
 
 ---
 
@@ -297,7 +297,7 @@ If you have Pi's [auto-reload](https://github.com/badlogic/pi-mono/blob/main/pac
 | `defaultRole` | `"role-assistant"` | Role applied at session start when no `--role` or `PI_ROLE`. |
 | `preserveRoleOnNewSession` | `false` | Keep the current process's active role when creating a normal new conversation. Does not apply across restarts or to explicit `/role <name> --reset`. |
 | `intercomMode` | `"off"` | Default intercom behavior for roles that don't set it explicitly. |
-| `titleModel` | `null` (auto) | Model used for session-intent summarization. Falls back to a small built-in or session's current model. |
+| `titleModel` | `null` (auto) | Model used for session-intent summarization. Its API key and request headers are resolved from Pi's model registry, including `models.json` environment-variable configuration. Falls back to the session's current model. |
 | `warnOnMissingMcp` | `true` | Whether to surface a warning when a role's `mcp:*` entry can't be resolved. |
 
 Project settings beat global settings, per Pi's standard precedence.

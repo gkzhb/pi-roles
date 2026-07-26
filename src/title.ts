@@ -39,7 +39,13 @@
  * generation-token cancellation scheme.
  */
 
-import { complete, type AssistantMessage, type Context, type Model } from "@mariozechner/pi-ai";
+import {
+  complete,
+  type AssistantMessage,
+  type Context,
+  type Model,
+  type ProviderStreamOptions,
+} from "@mariozechner/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { composeFooterStatus, composeSessionName, findModelInRegistry } from "./apply.ts";
 import { debugLog } from "./debug.ts";
@@ -201,7 +207,11 @@ export interface TitleArgs {
    * Test seam. Defaults to `complete` from `@mariozechner/pi-ai`. Tests pass
    * a fake to avoid hitting a real model; production callers leave it unset.
    */
-  completeFn?: (model: Model<any>, context: Context) => Promise<AssistantMessage>;
+  completeFn?: (
+    model: Model<any>,
+    context: Context,
+    options?: ProviderStreamOptions,
+  ) => Promise<AssistantMessage>;
 }
 
 /**
@@ -247,17 +257,36 @@ export async function generateAndApplyTitle(args: TitleArgs): Promise<void> {
 
   state.titleInFlight = true;
   try {
+    const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+    if (!auth.ok) {
+      debugLog("title", "title model authentication unavailable", { error: auth.error });
+      if (!state.titleErrorShown && ctx.hasUI) {
+        ctx.ui.notify(`pi-roles: title model authentication failed (${auth.error}).`, "warning");
+        state.titleErrorShown = true;
+      }
+      return;
+    }
+
     debugLog("title", "calling complete", {
       modelId: (model as any)?.id,
       modelProvider: (model as any)?.provider ?? (model as any)?.api?.provider,
       configuredTitleModel,
       usedFallback: !configuredTitleModel || configuredTitleModel.length === 0,
+      hasApiKey: !!auth.apiKey,
+      headerNames: auth.headers ? Object.keys(auth.headers) : [],
       promptLen: trimmed.length,
     });
-    const message = await completeFn(model, {
-      systemPrompt: TITLE_SYSTEM_PROMPT,
-      messages: [{ role: "user", content: trimmed, timestamp: Date.now() }],
-    });
+    const message = await completeFn(
+      model,
+      {
+        systemPrompt: TITLE_SYSTEM_PROMPT,
+        messages: [{ role: "user", content: trimmed, timestamp: Date.now() }],
+      },
+      // `complete` does not consult Pi's ModelRegistry. Passing resolved
+      // auth here is essential for custom providers whose API key comes from
+      // a models.json env reference rather than pi-ai's built-in env map.
+      { apiKey: auth.apiKey, headers: auth.headers },
+    );
     debugLog("title", "complete returned", {
       stopReason: (message as any)?.stopReason,
       errorMessage: (message as any)?.errorMessage,
