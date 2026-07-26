@@ -15,9 +15,9 @@
  *     in-memory active-role pointer that the `before_agent_start` handler
  *     reads.
  *   - The actual `/role <name> --reset` command. `resetSession` here is the
- *     primitive that wraps `ctx.newSession()`, but the lifecycle (set
- *     pendingRoleAfterReset, wait for the next `session_start`) lives in
- *     the command handler in index.ts.
+ *     primitive that wraps `ctx.newSession()`, but index.ts owns the durable
+ *     lifecycle: it persists a reset request before replacement and the new
+ *     extension instance reads it from `session_start.previousSessionFile`.
  */
 
 import type {
@@ -352,12 +352,10 @@ export async function applyRole(
  * when `cancelled` is true (the user aborted at a confirm prompt).
  *
  * Why this is its own function: `ctx.newSession()` invalidates session-bound
- * captured state per Pi's docs, and the safe pattern is "wait for idle, call
- * newSession, then let session_start re-apply the role". The command handler
- * stores the desired role name in a module-scoped `pendingRoleAfterReset`
- * variable and reads it on the subsequent `session_start` event with reason
- * "new". This helper just wraps the prelude of that flow so the command
- * handler stays readable.
+ * captured state. The command handler persists its desired role in the old
+ * session *before* calling this helper; the replacement extension instance
+ * resolves it via `session_start.previousSessionFile`. This helper just wraps
+ * the idle wait + replacement call so the command handler stays readable.
  */
 export async function resetSession(ctx: ExtensionCommandContext): Promise<{ cancelled: boolean }> {
   await ctx.waitForIdle();

@@ -21,7 +21,7 @@ These override anything in the Phase-2/3 sections below. The numbered notes here
 6. **`AutocompleteItem` requires `label`** (in addition to `value` and optional `description`). Both `value` and `label` are populated as the role/subcommand name in `roleCompletions`.
 7. **`SettingsManager` is not exposed on `ExtensionContext`.** pi-roles reads its own `pi-roles` namespace from `~/.pi/agent/settings.json` and `<project>/.pi/settings.json` directly via `src/settings.ts`. Project values win field-level merge. Parse failures degrade to defaults silently.
 8. **Persisted `ActiveRoleState` recovery** uses `ctx.sessionManager.getEntries()` and walks the array right-to-left for the last `CustomEntry` whose `customType === ACTIVE_ROLE_ENTRY_TYPE`. There is no convenience `getEntriesByCustomType` API — the manual scan is the supported path.
-9. **`--reset` ordering**: set `pendingRoleAfterReset` *before* calling `ctx.newSession()` because `newSession` synchronously fires `session_start` with reason `"new"` before resolving. The session_start handler reads and clears the pointer. On cancellation, restore to `null`.
+9. **`--reset` transfer**: persist `pi-roles:reset-role-request` before calling `ctx.newSession()`. The replacement extension instance reads it through `session_start.previousSessionFile`; if replacement is cancelled, append `pi-roles:reset-role-cancelled` in the still-live old session.
 10. **`before_agent_start` REPLACES Pi's default system prompt.** The role body is returned as `{ systemPrompt }` (with the optional intercom addendum appended after the body). We do **not** read `event.systemPrompt`. Pi's docstring on `BeforeAgentStartEventResult.systemPrompt` says exactly "Replace the system prompt for this turn"; that is the founding goal of pi-roles — the role body must be authoritative so a non-coding role isn't polluted by Pi's default coding-assistant framing. Subsequent extensions in the chain see our value as their `event.systemPrompt` and may compose if they choose. The replacement composition is implemented in `composeSystemPrompt(state, pi)` (exported from `src/index.ts` for unit-testability); the registered handler is a one-line delegation. **Earlier drafts of this note documented an "appender" implementation — that was wrong and has been corrected.**
 11. **Fallback-on-resolution-error**: a missing or broken requested role does not fail the session — `applyResolved` notifies the user and falls back to the built-in `role-assistant`. Only complete absence of the built-in causes a no-op.
 
@@ -252,7 +252,7 @@ if (args.includes("--reset")) {
 }
 ```
 
-**Watch out:** docs say `ctx.newSession()` + `ctx.fork()` + `ctx.switchSession()` invalidate captured pre-replacement session-bound objects. Use `withSession` if mutating after the call. Or simpler: store the role-to-apply in a module-scoped variable and apply on the subsequent `session_start` with reason `"new"`.
+**Watch out:** docs say `ctx.newSession()` + `ctx.fork()` + `ctx.switchSession()` invalidate captured pre-replacement session-bound objects. Do not use a module-scoped pending role as a replacement handoff: Pi creates a fresh extension instance. Instead, append the requested reset role to the old session before `newSession()`, then let the new instance read it from `event.previousSessionFile`.
 
 ---
 
@@ -269,14 +269,14 @@ import { ACTIVE_ROLE_ENTRY_TYPE, STATUS_KEY, BUILTIN_ROLE_ASSISTANT_NAME } from 
 
 export default function (pi: ExtensionAPI) {
   let activeRole: ResolvedRole | null = null;
-  let pendingRoleAfterReset: string | null = null;
 
   pi.registerFlag("role", { type: "string", description: "Launch as the named pi-roles role." });
 
   pi.on("session_start", async (event, ctx) => {
-    // 1. Restore from appendEntry if reason is "reload" or "resume".
-    // 2. Otherwise resolve: --role > PI_ROLE > settings.defaultRole > role-assistant.
-    // 3. If pendingRoleAfterReset (set by /role <n> --reset), use it.
+    // 1. reload/resume: restore this session's appendEntry state.
+    // 2. new: inspect event.previousSessionFile. A persisted reset request
+    //    wins; otherwise preserve the prior active role if configured.
+    // 3. Otherwise resolve: --role > PI_ROLE > settings.defaultRole > role-assistant.
     // 4. Apply.
   });
 
