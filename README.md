@@ -1,8 +1,8 @@
-# pi-roles
+# @gkzhb/pi-roles
 
 > Role-based session configuration for [pi coding agent](https://github.com/badlogic/pi-mono). Launch a session as a named role (architect, planner, marketing-strategist, …) and hot-swap roles mid-session — without restarting Pi.
 
-`pi-roles` is to **top-level pi sessions** what [`pi-subagents`](https://github.com/nicobailon/pi-subagents) is to **sub-agents**: same `.md` + YAML frontmatter convention, same project/user scope rules, drop-in flow. The extension is **agnostic of which roles exist** — roles are just markdown files you create.
+`@gkzhb/pi-roles` is to **top-level pi sessions** what [`pi-subagents`](https://github.com/nicobailon/pi-subagents) is to **sub-agents**: same `.md` + YAML frontmatter convention, same project/user scope rules, drop-in flow. The extension is **agnostic of which roles exist** — roles are just markdown files you create.
 
 ```bash
 pi --role architect              # launch as architect
@@ -21,8 +21,10 @@ When you swap roles, the session's **system prompt, model, thinking level, and a
 
 ## Install
 
+Published on npm as [`@gkzhb/pi-roles`](https://www.npmjs.com/package/@gkzhb/pi-roles).
+
 ```bash
-pi install npm:pi-roles
+pi install npm:@gkzhb/pi-roles
 ```
 
 Then restart pi. The extension is auto-discovered; the `--role` flag and `/role` command become available.
@@ -30,7 +32,7 @@ Then restart pi. The extension is auto-discovered; the `--role` flag and `/role`
 To try without installing:
 
 ```bash
-pi -e git:github.com/lojacobs/pi-roles
+pi -e npm:@gkzhb/pi-roles
 ```
 
 ---
@@ -39,7 +41,7 @@ pi -e git:github.com/lojacobs/pi-roles
 
 When you build a multi-agent dev workflow with specialized roles — architect (design), planner (decompose), orchestrator (dispatch), or any equivalent for marketing, research, ops — the *top-level* role is a property of the whole session, not of an individual sub-agent dispatch. You want different system prompts, different models, different tool restrictions per role, and you want to switch between them without restarting.
 
-`pi-roles` is the cleanest way to do that. No shell aliases, no separate workspace directories, no forking pi-subagents into something it isn't.
+`@gkzhb/pi-roles` is the cleanest way to do that. No shell aliases, no separate workspace directories, no forking pi-subagents into something it isn't.
 
 ---
 
@@ -160,7 +162,7 @@ The default `roleScope` is `both` (project + user + built-in). Override via sett
 
 ## Built-in `role-assistant`
 
-`pi-roles` ships **one** built-in role: `role-assistant`. It's the default fallback when no `defaultRole` is configured and you don't pass `--role` or `PI_ROLE`.
+`@gkzhb/pi-roles` ships **one** built-in role: `role-assistant`. It's the default fallback when no `defaultRole` is configured and you don't pass `--role` or `PI_ROLE`.
 
 The role-assistant:
 
@@ -188,7 +190,7 @@ By default, a normal new conversation resolves its role again from `--role`, `PI
 
 A normal replacement reads the old session file. **Before the first assistant
 response, Pi deliberately has not created that file yet**; during that narrow
-case pi-roles transfers the active role through a process-local snapshot taken
+case @gkzhb/pi-roles transfers the active role through a process-local snapshot taken
 at `session_before_switch`. The replacement instance consumes that snapshot
 once. This fallback does not persist roles across a Pi restart.
 
@@ -236,7 +238,7 @@ The role indicator also appears in Pi's footer (via `ctx.ui.setStatus`), composi
 
 ## pi-intercom integration
 
-[`pi-intercom`](https://github.com/nicobailon/pi-intercom) is an **optional peer dependency**. `pi-roles` works without it; intercom features are no-ops when it's not installed.
+[`pi-intercom`](https://github.com/nicobailon/pi-intercom) is an **optional peer dependency**. `@gkzhb/pi-roles` works without it; intercom features are no-ops when it's not installed.
 
 When it **is** installed, the global `intercomMode` setting controls whether roles get the `intercom` tool added to their active tool set, plus a small system-prompt addendum telling the LLM how and when to use it:
 
@@ -249,7 +251,7 @@ When it **is** installed, the global `intercomMode` setting controls whether rol
 
 Per-role override via the `intercom:` frontmatter field. Common pattern: `architect` and `planner` set `intercom: both`, `orchestrator` sets `intercom: off` (you don't want the orchestrator distracted by chatter while it dispatches).
 
-**Inter-session messaging is always between named sessions on the same machine** — `pi-roles` only opts roles in or out, it doesn't manage the broker, the protocol, or the message store. That's all `pi-intercom`.
+**Inter-session messaging is always between named sessions on the same machine** — `@gkzhb/pi-roles` only opts roles in or out, it doesn't manage the broker, the protocol, or the message store. That's all `pi-intercom`.
 
 ---
 
@@ -263,7 +265,7 @@ tools: read, grep, write, mcp:chrome-devtools, mcp:github
 
 This mirrors `pi-subagents`'s convention exactly, so muscle memory transfers. If `pi-mcp-adapter` isn't installed, the `mcp:*` entries are logged and skipped — the role still loads with its built-in tools.
 
-The first time you use a new MCP server, its tool metadata is cold-cached; you may need to restart Pi once for direct MCP tools to become available. This is a `pi-mcp-adapter` behavior, not something `pi-roles` controls.
+The first time you use a new MCP server, its tool metadata is cold-cached; you may need to restart Pi once for direct MCP tools to become available. This is a `pi-mcp-adapter` behavior, not something `@gkzhb/pi-roles` controls.
 
 ---
 
@@ -310,7 +312,7 @@ Project settings beat global settings, per Pi's standard precedence.
 
 ## What this extension does **not** do
 
-- **Spawn sub-agents.** That's [`pi-subagents`](https://github.com/nicobailon/pi-subagents). The two compose: use `pi-roles` for top-level session roles, `pi-subagents` for delegated workers within a role.
+- **Spawn sub-agents.** That's [`pi-subagents`](https://github.com/nicobailon/pi-subagents). The two compose: use `@gkzhb/pi-roles` for top-level session roles, `pi-subagents` for delegated workers within a role.
 - **Define any built-in roles other than `role-assistant`.** Roles are user content; the extension stays small.
 - **Manage parallel sessions.** Use multiple terminals or `tmux`. Coordination between parallel sessions is what `pi-intercom` handles, optionally.
 - **Persist which role was active across pi restarts** — except via `--role` / `PI_ROLE` / `defaultRole`. By design.
